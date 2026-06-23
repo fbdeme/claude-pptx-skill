@@ -11,6 +11,8 @@ $ARGUMENTS
 3. Preview: convert to PDF then PNG via LibreOffice, then Read each slide image
 4. If layout issues are found, fix and re-run. Always confirm visually before reporting done.
 
+> **브랜드/발표 형식 모드 요청 시** (예: 특정 회사 "○○ 형식으로") — §1~7 범용 규칙 위에 **§8 형식 모드 추가 패턴**을 따라 디자인 토큰 · 번호 배지 · 아이콘(로컬 PNG) · 카드 레이아웃을 입힌다. 구체 브랜드 모드와 아이콘 자산은 **각자 로컬에만** 두고(공유 repo엔 패턴만), 발표자의 기존 구조(머리글·셰브론·캡션·"핵심 원칙" 박스)는 보존한다. 평소(기본)에는 §1~7만 사용.
+
 Preview pipeline:
 ```bash
 libreoffice --headless --convert-to pdf OUTPUT.pptx --outdir /tmp/
@@ -125,14 +127,33 @@ lines = [
 add_tb(slide, left, top, width, height, lines)
 ```
 
-### 5. Table style — black border, white background, ONE accent color
+### 5. Table style — full black grid, white body cells, ONE accent color
+
+**모든 셀은 4면(L/R/T/B) 검은색 테두리(full grid)** 를 두른다. **헤더(컬럼) 행만 accent 배경(NAVY)** 이고, **헤더를 제외한 모든 셀은 흰색 배경**이다. python-pptx엔 셀 테두리 고수준 API가 없어 XML 헬퍼로 설정한다.
 
 ```python
-def set_cell_fmt(cell, text, bg=None, fg=DARK, size=10, bold=False,
-                 align=PP_ALIGN.CENTER, wrap=True):
-    if bg:
-        cell.fill.solid()
-        cell.fill.fore_color.rgb = bg
+from pptx.oxml.ns import qn
+from pptx.util import Pt
+
+def set_cell_border(cell, color="000000", width=Pt(0.75)):
+    """모든 셀에 4면 검은 테두리. ln* 은 fill보다 앞서야 하므로 tcPr 맨 앞에 삽입."""
+    tcPr = cell._tc.get_or_add_tcPr()
+    for tag in ("a:lnL", "a:lnR", "a:lnT", "a:lnB"):
+        for el in tcPr.findall(qn(tag)):
+            tcPr.remove(el)
+    for tag in ("a:lnB", "a:lnT", "a:lnR", "a:lnL"):   # 역순 삽입 → 최종 L,R,T,B 순
+        ln = tcPr.makeelement(qn(tag), {"w": str(int(width)), "cap": "flat",
+                                        "cmpd": "sng", "algn": "ctr"})
+        sf = tcPr.makeelement(qn("a:solidFill"), {})
+        c  = tcPr.makeelement(qn("a:srgbClr"), {"val": color})
+        sf.append(c); ln.append(sf); tcPr.insert(0, ln)
+
+def set_cell_fmt(cell, text, bg=WHITE, fg=DARK, size=10, bold=False,
+                 align=PP_ALIGN.CENTER, wrap=True, border=True):
+    cell.fill.solid()
+    cell.fill.fore_color.rgb = bg if bg else WHITE     # 헤더 외 전부 흰색
+    if border:
+        set_cell_border(cell)                          # 모든 셀 검은 4면 테두리
     tf = cell.text_frame
     tf.word_wrap = wrap
     para = tf.paragraphs[0]
@@ -142,21 +163,22 @@ def set_cell_fmt(cell, text, bg=None, fg=DARK, size=10, bold=False,
 ```
 
 Rules:
-- Table borders: default python-pptx thin black lines — do not override unless necessary
-- Cell background: leave unset (white) unless it is a header or highlighted cell
-- Header row: `bg=NAVY, fg=WHITE, bold=True`
-- Highlighted/active cell: ONE accent color only — never mix multiple highlight colors
-- Empty/inactive cells: no background set
+- **모든 셀: 4면 검은색 테두리**(`set_cell_border`) — full grid.
+- **헤더(컬럼) 행:** `bg=NAVY, fg=WHITE, bold=True`.
+- **헤더를 제외한 모든 셀: 흰색 배경**(`set_cell_fmt` 기본값 = `WHITE`).
+- 강조/활성 셀: accent **1색만** — 다색 금지.
 
 ```python
-# Good: header row + one accent
+# Header row (accent) + 모든 본문 셀 = 흰 배경 + 검은 grid (기본)
 for ci, h in enumerate(headers):
     set_cell_fmt(tbl.cell(0, ci), h, bg=NAVY, fg=WHITE, bold=True)
-set_cell_fmt(tbl.cell(2, 3), 'Active', bg=BLUE, fg=WHITE)
+for ri in range(1, rows):
+    for ci in range(cols):
+        set_cell_fmt(tbl.cell(ri, ci), data[ri-1][ci])      # 흰 배경 + 검은 테두리
+set_cell_fmt(tbl.cell(2, 3), 'Active', bg=BLUE, fg=WHITE)   # accent 1색만
 
-# Bad: multiple accent colors in same table
-# set_cell_fmt(tbl.cell(1,1), '...', bg=GREEN)  ← don't do this if BLUE already used
-# set_cell_fmt(tbl.cell(2,2), '...', bg=ORANGE) ← don't do this either
+# Bad: 한 표에 강조색 2개 이상
+# set_cell_fmt(tbl.cell(1,1), '...', bg=GREEN)   ← BLUE 이미 썼으면 금지
 ```
 
 ### 6. Shape deletion helper
@@ -176,6 +198,81 @@ Use fractional positioning: `Emu(int(W * 0.08))` rather than absolute EMU values
 
 ---
 
+## 8. 형식 모드 추가 (브랜드/발표 형식 확장 패턴)
+
+범용 규칙(§1~7) 위에 **특정 브랜드/발표 형식을 일관 적용하는 "모드"** 를 얹는 방법. 핵심 원칙: 발표자가 만든 기존 구조(머리글·셰브론·캡션·"핵심 원칙" 박스 등)는 **보존**하고 그 위에 디자인 언어만 더한다. **구체 브랜드 토큰·아이콘 자산은 공유 repo에 두지 않고 각자 로컬**(예: `~/.claude/commands/pptx.md` 하단의 모드 섹션 + `assets/<brand>-icons/`)에 둔다 — 이 §8은 그 *패턴*만 정의한다.
+
+### 8.1 모드 구성요소
+1. **디자인 토큰 블록** — 브랜드 색을 상수로(BRAND/ACCENT/BADGE/CARD/BODY/CAPTION…). 모드에선 §1 범용 팔레트를 대체. "강조 1색" 규칙은 브랜드가 의도적으로 2색 대비(예: 블루+주황)를 쓰면 *그 모드 한정* 예외.
+2. **타이포그래피** — run마다 latin/ea/cs typeface 3종 지정(한글 깨짐·폰트 혼용 방지). 제목/본문/배지의 크기·굵기·색 규정.
+3. **번호 배지** — 작은 원형 도형 + 흰 숫자(단계 표시).
+4. **아이콘** — 이 환경엔 아이콘 MCP가 없으므로 **로컬 PNG**를 `add_picture`로 삽입. 색 변형이 필요하면 색별 PNG를 따로 둔다(python-pptx 리컬러는 제한적).
+5. **카드/강조 도형** — 라운드 사각 카드, 강조 박스, 셰브론/화살표 헬퍼.
+6. **레이아웃 패턴** — N단계 가로 카드 / 2단 비교 / 세로 스택 등.
+7. **보존 규칙** — 기존 머리글·로고·캡션·의도된 색 대비 유지.
+8. **검증** — LibreOffice 미리보기로 모든 슬라이드 시각 확인.
+
+### 8.2 재사용 헬퍼 (브랜드 무관 — 토큰/경로만 바꿔 사용)
+
+```python
+import os
+from pptx.util import Pt, Emu
+from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+from pptx.oxml.ns import qn
+from lxml import etree
+
+PTX = 12700  # 1pt = 12700 EMU
+
+def set_run_font(run, latin="Arial", ea="맑은 고딕"):
+    """run마다 latin/ea/cs typeface 지정 — 한글·라틴 혼용 시 필수."""
+    rPr = run._r.get_or_add_rPr()
+    for tag, face in (('a:latin', latin), ('a:ea', ea), ('a:cs', ea)):
+        el = rPr.find(qn(tag))
+        if el is None:
+            el = etree.SubElement(rPr, qn(tag))
+        el.set('typeface', face)
+
+def num_badge(slide, n, left, top, d=Emu(254000), fill=None, line=WHITE, fontc=WHITE):
+    """원형 숫자 배지(단계 표시). d 기본=20pt. fill/line/fontc는 모드 토큰으로 전달."""
+    s = slide.shapes.add_shape(MSO_SHAPE.OVAL, left, top, d, d)
+    s.fill.solid(); s.fill.fore_color.rgb = fill
+    s.line.color.rgb = line; s.line.width = Pt(1.5); s.shadow.inherit = False
+    tf = s.text_frame; tf.word_wrap = False
+    tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = Emu(0)
+    tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+    p = tf.paragraphs[0]; p.alignment = PP_ALIGN.CENTER
+    r = p.add_run(); r.text = str(n)
+    r.font.size = Pt(10); r.font.bold = True; r.font.color.rgb = fontc
+    set_run_font(r); return s
+
+def png_icon(slide, icon_dir, name, left, top, size=Emu(304800), variant="blue"):
+    """로컬 단색 PNG 아이콘 삽입. 색은 PNG 자체 색(변형은 색별 파일: name_blue.png / name_white.png)."""
+    return slide.shapes.add_picture(os.path.join(icon_dir, f"{name}_{variant}.png"),
+                                    left, top, height=size)
+
+def card(slide, left, top, w, h, fill, line, rounded=True):
+    shp = slide.shapes.add_shape(
+        MSO_SHAPE.ROUNDED_RECTANGLE if rounded else MSO_SHAPE.RECTANGLE, left, top, w, h)
+    shp.fill.solid(); shp.fill.fore_color.rgb = fill
+    shp.line.color.rgb = line; shp.line.width = Pt(1); shp.shadow.inherit = False
+    return shp
+```
+
+### 8.3 배치 관례
+- **가로 카드**: 배지를 카드 상단 중앙에 걸치게(top ≈ 카드top−11pt, left ≈ 카드중심−10pt), 아이콘(≈24pt)을 그 아래(top ≈ 카드top+13pt), 카드 텍스트는 세로정렬 Top + 상단여백 ~44pt로 내려 배지·아이콘 공간 확보.
+- **세로 스택**: 배지를 박스 왼쪽 세로 중앙(left ≈ 박스left+8pt, top ≈ 박스top + 높이/2 − 10pt), 박스 txBody `lIns`를 ~26pt로 늘려 텍스트가 배지를 피하게.
+- **2단 비교**: 헤더 펄(좌=회색/우=브랜드색 관례)에 흰 아이콘 ~14pt, 컬럼 제목은 브랜드색.
+
+### 8.4 모드 분리 (중요)
+- 공유 repo엔 **이 §8 패턴만** 둔다.
+- 구체 브랜드 모드(실제 토큰 hex · 아이콘 파일명 · 정확한 좌표)와 **아이콘 PNG는 각자 로컬**에 둔다 → 브랜드 자산이 공개 repo에 올라가지 않게.
+
+### 8.5 검증
+- 모드 적용 후 LibreOffice 미리보기로 전 슬라이드 확인: 제목이 브랜드색인지, 배지·아이콘이 텍스트 위 올바른 위치인지, 헤더 펄 아이콘 색이 맞는지, 보존 요소(머리글·셰브론·캡션·강조 박스)가 유지됐는지.
+
+---
+
 ## Checklist before finishing
 
 - [ ] Ran the script successfully (no errors)
@@ -185,3 +282,10 @@ Use fractional positioning: `Emu(int(W * 0.08))` rather than absolute EMU values
 - [ ] Indentation uses `set_para_indent()`, not spaces
 - [ ] Spacing uses `space_before`, not empty paragraphs
 - [ ] Output file saved to the requested path
+
+**형식 모드(§8) 적용 시 추가:**
+- [ ] 제목/단계 제목이 브랜드색
+- [ ] 번호 배지가 단계 수만큼 정렬되어 얹힘
+- [ ] 아이콘(로컬 PNG)이 카드/헤더에 일관 크기·색으로 배치
+- [ ] run마다 typeface(latin/ea/cs) 지정
+- [ ] 기존 구조(머리글·셰브론·캡션·강조 박스) 보존
